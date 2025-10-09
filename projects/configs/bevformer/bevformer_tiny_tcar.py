@@ -28,7 +28,7 @@ img_norm_cfg = dict(
 
 # For nuScenes we usually do 10-class detection
 class_names = [
-    'car', 'cyc', 'ped'
+    'car', 'truck', 'cyc', 'ped'
 ]
 
 input_modality = dict(
@@ -73,7 +73,7 @@ model = dict(
         bev_h=bev_h_,
         bev_w=bev_w_,
         num_query=900,
-        num_classes=3,
+        num_classes=4,
         in_channels=_dim_,
         sync_cls_avg_factor=True,
         with_box_refine=True,
@@ -140,7 +140,7 @@ model = dict(
             pc_range=point_cloud_range,
             max_num=300,
             voxel_size=voxel_size,
-            num_classes=3),
+            num_classes=4),
         positional_encoding=dict(
             type='LearnedPositionalEncoding',
             num_feats=_pos_dim_,
@@ -172,37 +172,42 @@ dataset_type = 'CustomTcarDataset'
 data_root = 'data/nuscenes/'
 file_client_args = dict(backend='disk')
 
-# train_pipeline = [
-#     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
-#     dict(type='PhotoMetricDistortionMultiViewImage'),
-#     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
-#     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
-#     dict(type='ObjectNameFilter', classes=class_names),
-#     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
-#     dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
-#     dict(type='PadMultiViewImage', size_divisor=32),
-#     dict(type='DefaultFormatBundle3D', class_names=class_names),
-#     dict(type='CustomCollect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img'])
-# ]
-
 train_pipeline = [
     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
     dict(type='PadMultiViewImage', size_divisor=32),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
     dict(type='CustomCollect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img'])
 ]
 
+# train_pipeline = [
+#     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+#     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
+#     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
+#     dict(type='ObjectNameFilter', classes=class_names),
+#     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+#     dict(type='PadMultiViewImage', size_divisor=32),
+#     dict(type='DefaultFormatBundle3D', class_names=class_names),
+#     dict(type='CustomCollect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img'])
+# ]
+
 val_pipeline = [
     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
+    dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
+    dict(type='ObjectNameFilter', classes=class_names),
     dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='RandomScaleImageMultiViewImage', scales=[0.5]),
     dict(type='PadMultiViewImage', size_divisor=32),
-    dict(type='DefaultFormatBundle3D', class_names=class_names, with_label=False),
-    dict(type='CustomCollect3D', keys=['img'])
+    dict(type='DefaultFormatBundle3D', class_names=class_names),
+    dict(type='CustomCollect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'img'])
 ]
+
 
 test_pipeline = [
     dict(type='LoadMultiViewImageFromFiles', to_float32=True),
@@ -244,12 +249,12 @@ data = dict(
     val=dict(type=dataset_type,
              data_root=data_root,
              ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
-             pipeline=train_pipeline,  bev_size=(bev_h_, bev_w_),
+             pipeline=val_pipeline,  bev_size=(bev_h_, bev_w_),
              classes=class_names, modality=input_modality, samples_per_gpu=1),
     test=dict(type=dataset_type,
              data_root=data_root,
              ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
-             pipeline=train_pipeline,  bev_size=(bev_h_, bev_w_),
+             pipeline=val_pipeline,  bev_size=(bev_h_, bev_w_),
              classes=class_names, modality=input_modality, samples_per_gpu=1),
     shuffler_sampler=dict(type='DistributedGroupSampler'),
     nonshuffler_sampler=dict(type='DistributedSampler')
@@ -272,13 +277,13 @@ lr_config = dict(
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3)
-total_epochs = 1000
+total_epochs = 50
 evaluation = dict(interval=1, pipeline=test_pipeline)
 
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 
 log_config = dict(
-    interval=2,
+    interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
         dict(type='TensorboardLoggerHook')

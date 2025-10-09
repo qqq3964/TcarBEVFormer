@@ -141,3 +141,5 @@ vis_output/*.png
 
 # visualize
 vis.ipynb
+
+vis_out

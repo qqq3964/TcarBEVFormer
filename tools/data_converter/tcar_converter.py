@@ -16,6 +16,10 @@ from typing import List, Tuple, Union
 
 from mmdet3d.core.bbox.box_np_ops import points_cam2img
 from mmdet3d.datasets import NuScenesDataset
+import sys
+
+project_root = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
 
 nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
                   'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
@@ -302,9 +306,8 @@ def _fill_trainval_infos(nusc,
 
         if sample['scene_token'] in train_scenes:
             train_nusc_infos.append(info)
+        else:
             val_nusc_infos.append(info)
-        # else:
-        #     val_nusc_infos.append(info)
 
     return train_nusc_infos, val_nusc_infos
 

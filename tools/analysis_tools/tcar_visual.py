@@ -28,6 +28,9 @@ from nuscenes.eval.detection.data_classes import DetectionBox
 from nuscenes.eval.detection.utils import category_to_detection_name
 from nuscenes.eval.detection.render import visualize_sample
 
+project_root = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
+sys.path.insert(0, project_root)
+
 from tools.tcar.tcar import TestCar
 from typing import List, Dict, Any
 
@@ -538,7 +541,7 @@ def render_sample_data(
             # Load boxes and image.
             boxes = [Box(record['translation'], record['size'], Quaternion(record['rotation']),
                          name=record['detection_name'], token='predicted') for record in
-                     pred_data['results'][sample_token] if record['detection_score'] > 0.2]
+                     pred_data['results'][sample_token] if record['detection_score'] > 0.5]
 
             data_path, boxes_pred, camera_intrinsic = get_predicted_data(sample_data_token,
                                                                          box_vis_level=box_vis_level, pred_anns=boxes)
@@ -591,11 +594,11 @@ def render_sample_data(
 if __name__ == '__main__':
     nusc = TestCar(version='v1.0-trainval', dataroot='./data/nuscenes', verbose=True)
     # render_annotation('7603b030b42a4b1caa8c443ccc1a7d52')
-    bevformer_results = mmcv.load('test/bevformer_tiny_tcar/Tue_Oct__7_15_14_16_2025/pts_bbox/results_nusc.json')
+    bevformer_results = mmcv.load('test/bevformer_tiny_tcar/Thu_Oct__9_12_39_43_2025/pts_bbox/results_nusc.json')
     sample_token_list = list(bevformer_results['results'].keys())
-    for id in range(0, 10):
+    for id in range(0, 40):
         tmp_token = '052c52a21b694de890185aa462d834c11759604230884603484'
         tmp2_token = 'f59c8ec690bb425ab5affd87d329aaf01759604230850572761'
-        render_sample_data(sample_token_list[id], pred_data=bevformer_results, out_path=osp.join('vis_output', sample_token_list[id]))
+        render_sample_data(sample_token_list[id], pred_data=bevformer_results, out_path=osp.join('vis_out/Thu_Oct__9_12_39_43_2025_all', sample_token_list[id]))
         # render_sample_data(sample_token_list[id], pred_data=bevformer_results, out_path=tmp_token)
         # render_sample_data(sample_token_list[id], pred_data=bevformer_results, out_path=tmp2_token)
