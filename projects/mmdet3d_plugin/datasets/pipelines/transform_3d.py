@@ -307,7 +307,7 @@ class RandomScaleImageMultiViewImage(object):
             dict: Updated result dict.
         """
         rand_ind = np.random.permutation(range(len(self.scales)))[0]
-        rand_scale = self.scales[rand_ind]
+        rand_scale = self.scales[rand_ind] # This is reshape img size only 0.5
 
         y_size = [int(img.shape[0] * rand_scale) for img in results['img']]
         x_size = [int(img.shape[1] * rand_scale) for img in results['img']]

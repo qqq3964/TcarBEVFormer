@@ -1,0 +1,26 @@
+57 => N030
+16 => 107
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/n030/*.png" \
+  -c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+  vis_out/n030_composite.mp4
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/pred_color_n030/*.png" \
+-c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+vis_out/color_n030_composite.mp4
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/GT_ONLY_n030/*.png" \
+-c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+vis_out/GT_ONLY_n030_composite.mp4
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/n107/*.png" \
+  -c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+  vis_out/n107_composite.mp4
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/pred_color_n107/*.png" \
+-c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+vis_out/color_n107_composite.mp4
+
+ffmpeg -y -framerate 6 -pattern_type glob -i "vis_out/GT_ONLY_n107/*.png" \
+-c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+vis_out/GT_ONLY_n107_composite.mp4

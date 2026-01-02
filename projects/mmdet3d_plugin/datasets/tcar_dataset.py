@@ -154,7 +154,7 @@ class CustomTcarDataset(NuScenesDataset):
                     cam_intrinsic=cam_intrinsics,
                     lidar2cam=lidar2cam_rts,
                 ))
-
+            
         # if not self.test_mode:
         annos = self.get_ann_info(index)
         input_dict['ann_info'] = annos
@@ -169,7 +169,7 @@ class CustomTcarDataset(NuScenesDataset):
             patch_angle += 360
         can_bus[-2] = patch_angle / 180 * np.pi
         can_bus[-1] = patch_angle
-
+        # print(image_paths)
         return input_dict
 
     def __getitem__(self, idx):

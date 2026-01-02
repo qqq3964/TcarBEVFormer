@@ -143,3 +143,8 @@ vis_output/*.png
 vis.ipynb
 
 vis_out
+
+# TensorRT / model artifacts
+trt_checkpoint/
+*.trt
+*.engine

@@ -2,7 +2,8 @@
 """
 Composite scene visualizer:
 - Left: 3x2 camera mosaic with predicted boxes projected on each image (no gaps).
-- Right: BEV view sized to exactly match the LEFT block height (no vertical whitespace).
+- Right: BEV view (LiDAR XY scatter + GT/PRED boxes) sized to exactly match the LEFT block height,
+         auto-scaled to fully fill the right column width, and rotated 90° CCW.
 - Saves one PNG per sample (frame), then stitches frames into an MP4.
 
 Notes:
@@ -24,17 +25,16 @@ from PIL import Image
 from matplotlib.gridspec import GridSpec
 from pyquaternion import Quaternion
 from nuscenes.utils.geometry_utils import view_points
-
-# NuScenes devkit imports
-from nuscenes.utils.data_classes import LidarPointCloud as NuscLidarPointCloud, Box
+from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import box_in_image, BoxVisibility
 
-# Your project wrapper (adjust import path if needed)
+# Project wrapper (adjust import path if needed)
 project_root = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
 sys.path.insert(0, project_root)
 from tools.tcar.tcar import TestCar
+from tools.tcar.utils import LidarPointCloud
 
-# ---------- Deterministic rendering rcParams ----------
+# Deterministic rendering rcParams
 mpl.rcParams['savefig.pad_inches'] = 0
 mpl.rcParams['figure.constrained_layout.use'] = False
 
@@ -69,7 +69,6 @@ def _extract_center_size_quat_name(b):
     - nuscenes.utils.data_classes.Box (center, size or wlh, orientation, name)
     - EvalBox-like objects (translation, size, rotation, detection_name)
     """
-    # center / translation
     if hasattr(b, 'center'):
         center = np.array(b.center)
     elif hasattr(b, 'translation'):
@@ -77,7 +76,6 @@ def _extract_center_size_quat_name(b):
     else:
         raise AttributeError("Box-like object has neither 'center' nor 'translation'.")
 
-    # size / wlh
     if hasattr(b, 'size'):
         size = np.array(b.size)
     elif hasattr(b, 'wlh'):
@@ -85,7 +83,6 @@ def _extract_center_size_quat_name(b):
     else:
         raise AttributeError("Box-like object has neither 'size' nor 'wlh'.")
 
-    # quaternion / rotation
     if hasattr(b, 'orientation'):
         quat = b.orientation
     elif hasattr(b, 'rotation'):
@@ -93,10 +90,8 @@ def _extract_center_size_quat_name(b):
     else:
         raise AttributeError("Box-like object has neither 'orientation' nor 'rotation'.")
 
-    # name
     name = getattr(b, 'name', getattr(b, 'detection_name', 'vehicle'))
     return center, size, quat, name
-
 
 # ------------------------------
 # Project predicted boxes into a given camera
@@ -130,15 +125,13 @@ def get_predicted_data(nusc,
 
     box_list = []
     for box in pred_anns:
-        # Build a fresh Box regardless of source class/fields
         c, s, q, nm = _extract_center_size_quat_name(box)
         b = Box(c.copy(), s.copy(), q, name=nm)
 
-        # ego -> sensor(camera): keep consistent with nuScenes rendering helpers
+        # ego -> sensor(camera)
         b.rotate(Quaternion(cs_record['rotation']))
         b.translate(np.array(cs_record['translation']))
 
-        # Visibility check
         if not box_in_image(b, cam_intrinsic, imsize, vis_level=box_vis_level):
             continue
         box_list.append(b)
@@ -147,25 +140,18 @@ def get_predicted_data(nusc,
 
 
 # ------------------------------
-# Convert predicted boxes (ego) -> lidar sensor frame
+# Helper: get GT boxes in LiDAR frame via NuScenes API
 # ------------------------------
-def boxes_ego_to_lidar(pred_records, cs_record, score_th=0.5):
+def get_gt_boxes_in_lidar(nusc, sample_token: str, lidar_sd_token: str):
     """
-    Convert predicted boxes (ego frame) to lidar sensor frame.
-    Returns a list of nuscenes Box in lidar frame.
+    Return GT boxes already transformed into the LiDAR sensor frame
+    using the official NuScenes helper (most reliable).
     """
-    boxes_lidar = []
-    for rec in pred_records:
-        if rec.get('detection_score', 0.0) < score_th:
-            continue
-        c = np.array(rec['translation'])
-        s = np.array(rec['size'])
-        q = Quaternion(rec['rotation'])
-        b = Box(center=c, size=s, orientation=q, name=rec.get('detection_name', 'vehicle'))
-        # ego -> sensor(lidar): keep consistent with get_predicted_data() transform order
-        b.rotate(Quaternion(cs_record['rotation']))
-        b.translate(np.array(cs_record['translation']))
-        boxes_lidar.append(b)
+    sample = nusc.get('sample', sample_token)
+    _, boxes_lidar, _ = nusc.get_sample_data(
+        lidar_sd_token,
+        selected_anntokens=sample['anns']
+    )
     return boxes_lidar
 
 
@@ -186,9 +172,11 @@ def render_composite_frame(nusc,
 
     - Left: 3x2 tightly packed camera images with predicted boxes (score >= score_th).
     - Right: BEV axes HEIGHT exactly equals LEFT block height, width fills its column;
-             equal meter-per-pixel scale (no distortion).
+             auto-scaled to the pixel aspect of the right column and rotated 90° CCW.
     """
     sample = nusc.get('sample', sample_token)
+    PRED_COLOR = (0.0, 0.85, 1.0)  # cyan
+    GT_COLOR   = (1.0, 0.0, 0.0)   # red
 
     # --- Probe one camera image to get native size ---
     probe_sd = sample['data'][cams_order[0]]
@@ -201,7 +189,7 @@ def render_composite_frame(nusc,
     fig_h_px = 2 * img_h
     fig = plt.figure(figsize=(fig_w_px / dpi, fig_h_px / dpi), dpi=dpi)
 
-    # NEW: force solid black background at the figure level
+    # Solid black background for the entire figure
     fig.patch.set_facecolor('black')
     fig.patch.set_alpha(1.0)
 
@@ -212,12 +200,11 @@ def render_composite_frame(nusc,
     gs_left = gs[0, 0].subgridspec(2, 3, wspace=0.0, hspace=0.0)
     left_axes = [fig.add_subplot(gs_left[i // 3, i % 3]) for i in range(6)]
     for ax in left_axes:
-        ax.set_facecolor('black')  # NEW: black background for any gaps
+        ax.set_facecolor('black')
         ax.axis('off')
 
     # Build Box list in EGO frame from predictions for this sample
     pred_records = pred_data['results'].get(sample_token, [])
-    # Sort once to render in deterministic order
     pred_records = sorted(pred_records, key=lambda r: (-r.get('detection_score', 0.0),
                                                        r.get('sample_token', ''),
                                                        r.get('detection_name', '')))
@@ -231,26 +218,38 @@ def render_composite_frame(nusc,
                 orientation=Quaternion(rec['rotation']),
                 name=rec.get('detection_name', 'vehicle'))
         )
-
-    # Render each camera tile with projected predictions
+    # --- Render each camera tile: GT only (EGO->CAMERA 변환 후 투영) ---
     for idx, cam in enumerate(cams_order):
         ax = left_axes[idx]
         sd_token = sample['data'][cam]
-        data_path, boxes_proj, K = get_predicted_data(nusc,
-                                                      sd_token,
-                                                      box_vis_level=BoxVisibility.ANY,
-                                                      pred_anns=pred_boxes_ego)
+
+        # NuScenes 내부 필터는 끄고(BoxVisibility.NONE) → 절대 빈 리스트 방지
+        data_path, boxes_gt_ego, K_tmp = nusc.get_sample_data(
+            sd_token, box_vis_level=BoxVisibility.NONE
+        )
+
+        # EGO → CAMERA 변환 + 실제 이미지 크기로 로컬 가시성 필터
+        boxes_gt_cam, K_cam, imsize = _boxes_to_gt_sensor(
+            nusc, boxes_gt_ego, sd_token, box_vis_level=BoxVisibility.ANY
+        )
+
         img = Image.open(data_path)
         w, h = img.size
-        ax.imshow(img, interpolation='nearest')
-        for b in boxes_proj:
-            col = np.array(get_color(nusc, b.name)) / 255.0
-            b.render(ax, view=K, normalize=True, colors=(col, col, col), linewidth=1)
-        # lock to native image extent and keep aspect
+        ax.imshow(img, interpolation='none')
+
+        GT_COLOR = (1.0, 0.0, 0.0)
+        for gb in boxes_gt_cam:
+            gb.render(ax, view=K_cam, normalize=True,
+                    colors=(GT_COLOR, GT_COLOR, GT_COLOR), linewidth=1.6)
+
         ax.set_xlim(0, w)
         ax.set_ylim(h, 0)
         ax.set_aspect('equal')
         ax.axis('off')
+
+
+
+
 
     # --- Compute positions of left and right columns in figure fraction ---
     left_holder = fig.add_subplot(gs[0, 0]); left_holder.axis('off')
@@ -259,120 +258,145 @@ def render_composite_frame(nusc,
     left_pos, right_pos = left_holder.get_position(), right_holder.get_position()
     left_holder.remove(); right_holder.remove()
 
-   # --- Right panel: BEV axes (height = left block height) ---
+    # --- Right panel: BEV axes (height = left block height) ---
     bev_ax = fig.add_axes([right_pos.x0, left_pos.y0, right_pos.width, left_pos.height])
-    bev_ax.set_facecolor('black')  # NEW
+    bev_ax.set_facecolor('black')
     bev_ax.axis('off')
     bev_ax.set_aspect('equal', adjustable='box')
 
-    # Lidar sample & point cloud  —— reference-equivalent loading
+    # ------------------------------
+    # Load LiDAR point cloud and draw as XY scatter (rotated 90° CCW)
+    # ------------------------------
     sd_lidar = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
-    cs = nusc.get('calibrated_sensor', sd_lidar['calibrated_sensor_token'])
+    cs_lidar = nusc.get('calibrated_sensor', sd_lidar['calibrated_sensor_token'])
     lidar_path = osp.join(nusc.dataroot, sd_lidar['filename'])
+    pc = LidarPointCloud.from_file(lidar_path)
 
-       # === Load lidar (lidar frame) ===
-    pc = NuscLidarPointCloud.from_file(lidar_path)
+    # Rotate 90° CCW: (x, y) -> (-y, x)
+    xy = pc.points[:2, :]  # (2, N)
+    x_rot = -xy[1, :]
+    y_rot =  xy[0, :]
 
-    # (Optional) z filter to denoise ground/sky
-    z = pc.points[2, :]
-    keep = (z > -3.0) & (z < 3.0)
-    x_ref = pc.points[0, keep]
-    y_ref = pc.points[1, keep]
-
-    # ---- 90° CCW rotate for our BEV view: (x, y) -> (-y, x) ----
-    x_rot = -y_ref
-    y_rot =  x_ref
-
-    # >>> Bitmap-based BEV (most robust; eliminates moiré / checker artifacts)
-    bev_img, extent = rasterize_points_to_bev(
-        x_rot, y_rot, bev_range_m=bev_range, meters_per_pixel=0.10  # try 0.05~0.15 if you want sharper/smoother
-    )
-
-    # Draw the BEV bitmap exactly in meter coordinates (no resampling distortion)
-    # Use white background with dark points: 'Greys_r'
-    vmax = np.percentile(bev_img, 99.5) if np.any(bev_img > 0) else 1.0
-    im = bev_ax.imshow(
-        bev_img,
-        origin='upper',
-        extent=extent,           # (-R, R, -R, R) in meters
-        interpolation='nearest',
-        cmap='Greys_r',          # NEW: white background, dark points
-        vmin=0.0,
-        vmax=vmax
-    )
-    bev_ax.set_xlim(-bev_range, bev_range)
-    bev_ax.set_ylim(-bev_range, bev_range)
-    bev_ax.set_aspect('equal', adjustable='box')
-    bev_ax.axis('off')
-
-    # Ego mark on top
-    bev_ax.plot(0, 0, 'x', markersize=10, color='blue')
-
-    # predicted boxes: transform to lidar, then render with a 90° view rotation
-    def boxes_ego_to_lidar(pred_records, cs_record, score_th=0.5):
-        out = []
-        for rec in pred_records:
-            if rec.get('detection_score', 0.0) < score_th:
-                continue
-            b = Box(center=np.array(rec['translation']),
-                    size=np.array(rec['size']),
-                    orientation=Quaternion(rec['rotation']),
-                    name=rec.get('detection_name', 'vehicle'))
-            b.rotate(Quaternion(cs_record['rotation']))
-            b.translate(np.array(cs_record['translation']))
-            out.append(b)
-        return out
-
-    boxes_lidar = boxes_ego_to_lidar(pred_records, cs, score_th=score_th)
-    gt_boxes_lidar = get_gt_boxes_in_lidar(nusc, sample_token, sample['data']['LIDAR_TOP'])
-
-    # 90° CCW rotation for boxes via view matrix
-    R_ccw90 = np.array([
-        [0., -1., 0., 0.],
-        [1.,  0., 0., 0.],
-        [0.,  0., 1., 0.],
-        [0.,  0., 0., 1.],
-    ], dtype=float)
-
-    # --- Distinct colors for Pred vs GT (RGB in 0..1) ---
-    pred_color = (0.0, 0.9, 1.0)   # cyan for predictions
-    gt_color   = (0.2, 1.0, 0.2)   # lime/green for ground-truth
-
-    # --- Render PRED boxes first (so GT can be drawn on top if overlapping) ---
-    for b in boxes_lidar:
-        # Use a fixed color for all predictions (clearest differentiation from GT)
-        b.render(bev_ax, view=R_ccw90, colors=(pred_color, pred_color, pred_color), linewidth=1.5)
-
-    # --- Render GT boxes on top ---
-    for b in gt_boxes_lidar:
-        b.render(bev_ax, view=R_ccw90, colors=(gt_color, gt_color, gt_color), linewidth=1.8)
-
-    # (Optional) Legend to make it explicit in the frame
-    from matplotlib.lines import Line2D
-    legend_elems = [
-        Line2D([0], [0], color=pred_color, lw=2, label='Pred'),
-        Line2D([0], [0], color=gt_color,   lw=2, label='GT'),
-    ]
-    bev_ax.legend(handles=legend_elems, loc='upper right', frameon=False, fontsize=40, labelcolor='white')
-
-
-    # keep your existing vertical meters ([-bev_range, bev_range]) and fill width by pixel aspect
-    ymin, ymax = -bev_range, bev_range
+    # Colorize points by radial distance (normalized to vertical range)
+    dists = np.sqrt(x_rot ** 2 + y_rot ** 2)
+    # We'll normalize by the vertical radius (bev_range); horizontal will be computed to fill the width.
+    colors = np.clip(dists / float(bev_range), 0.25, 1.0)
+    # Before setting limits, compute pixel aspect of the BEV axes to auto-scale X to fill width
     fig.canvas.draw()
     bbox_px = bev_ax.get_window_extent(fig.canvas.get_renderer())
-    px_aspect = bbox_px.width / bbox_px.height
-    yr = ymax - ymin
-    xr = yr * px_aspect
-    bev_ax.set_ylim(ymin, ymax)
-    bev_ax.set_xlim(-xr / 2, xr / 2)
+    px_aspect = bbox_px.width / bbox_px.height  # (pixels_x / pixels_y)
 
+    # Vertical limits are fixed to [-bev_range, bev_range] in meters (rotated Y axis)
+    ymin, ymax = -bev_range, bev_range
+    yr = ymax - ymin
+    xr = yr * px_aspect  # choose X span so that meters-per-pixel is isotropic and width is fully filled
+    xmin, xmax = -xr / 2.0, xr / 2.0
+
+    # Scatter with small dot marker and no edge to avoid grid-like artifacts
+    bev_ax.scatter(x_rot, y_rot, c=colors, s=0.9, alpha=0.9, cmap='viridis',
+                   marker='.', linewidths=0, rasterized=True)
+    # Ego mark
+    bev_ax.plot(0, 0, 'x', color='white')
+
+    # ------------------------------
+    # Render GT and Pred boxes in LiDAR frame, with 90° CCW view matrix
+    # ------------------------------
+    # Prediction boxes (ego -> lidar)
+    boxes_pred_lidar = []
+    # for rec in pred_records:
+    #     if rec.get('detection_score', 0.0) < score_th:
+    #         continue
+    #     b = Box(center=np.array(rec['translation']),
+    #             size=np.array(rec['size']),
+    #             orientation=Quaternion(rec['rotation']),
+    #             name=rec.get('detection_name', 'vehicle'))
+    #     b.rotate(Quaternion(cs_lidar['rotation']))
+    #     b.translate(np.array(cs_lidar['translation']))
+    #     boxes_pred_lidar.append(b)
+
+    # Ground-truth boxes (already in lidar frame from API)
+    boxes_gt_lidar = get_gt_boxes_in_lidar(nusc, sample_token, sample['data']['LIDAR_TOP'])
+
+    # 90° CCW rotation as a view matrix for box rendering
+    R_ccw90 = np.array([
+        [0.0, -1.0, 0.0, 0.0],
+        [1.0,  0.0, 0.0, 0.0],
+        [0.0,  0.0, 1.0, 0.0],
+        [0.0,  0.0, 0.0, 1.0],
+    ], dtype=float)
+
+    pred_color = PRED_COLOR
+    gt_color   = GT_COLOR
+
+    # for box in boxes_gt_lidar:
+    #     box.render(bev_ax, view=R_ccw90, colors=(gt_color, gt_color, gt_color), linewidth=2.2)
+    # for box in boxes_pred_lidar:
+    #     box.render(bev_ax, view=R_ccw90, colors=(pred_color, pred_color, pred_color), linewidth=1.8)
+
+    # Render GT boxes only.
+    for box in boxes_gt_lidar:
+        box.render(bev_ax, view=R_ccw90, colors=(gt_color, gt_color, gt_color), linewidth=2.2)
+    # Apply the auto-scaled limits (fits the right column exactly with equal aspect in meters)
+    bev_ax.set_xlim(xmin, xmax)
+    bev_ax.set_ylim(ymin, ymax)
+    bev_ax.set_aspect('equal')
+
+    # Hide ticks / grid / spines completely
+    bev_ax.set_xticks([])
+    bev_ax.set_yticks([])
+    bev_ax.grid(False)
+    for spine in bev_ax.spines.values():
+        spine.set_visible(False)
+    bev_ax.axis('off')
+
+    # Legend
+    from matplotlib.lines import Line2D
+    # legend_elems = [
+    #     Line2D([0], [0], color=pred_color, lw=2, label='Pred'),
+    #     Line2D([0], [0], color=gt_color,   lw=2, label='GT'),
+    # ]
+    # Legend: GT only.
+    legend_elems = [
+        Line2D([0], [0], color=gt_color, lw=2, label='GT'),
+    ]
+    bev_ax.legend(handles=legend_elems, loc='upper right', frameon=False,
+                  fontsize=20, labelcolor='white')
 
     # Save PNG frame (no tight bbox -> consistent canvas)
     fig.savefig(out_path, bbox_inches=None, pad_inches=0,
-                facecolor=fig.get_facecolor())   # NEW: keep black background
-
+                facecolor=fig.get_facecolor())
     plt.close(fig)
 
+def _boxes_to_gt_sensor(nusc, boxes, sample_data_token, box_vis_level):
+    """EGO -> CAMERA 변환(+선택적으로 카메라 가시성 필터에 쓰는 K, imsize 반환)"""
+    sd_record = nusc.get('sample_data', sample_data_token)
+    cs_record = nusc.get('calibrated_sensor', sd_record['calibrated_sensor_token'])
+    sensor_record = nusc.get('sensor', cs_record['sensor_token'])
+
+    cam_intrinsic = np.array(cs_record['camera_intrinsic'])
+    imsize = None
+    try:
+        im = Image.open(nusc.get_sample_data_path(sample_data_token))
+        imsize = im.size  # (w,h)
+        im.close()
+    except:
+        imsize = (1920, 1080)
+
+    out = []
+    for b in boxes:
+        bb = Box(b.center.copy(), b.wlh.copy() if hasattr(b, 'wlh') else b.size.copy(),
+                 b.orientation if hasattr(b, 'orientation') else Quaternion(b.rotation),
+                 name=getattr(b, 'name', getattr(b, 'detection_name', 'vehicle')))
+        # EGO -> CAMERA
+        bb.rotate(Quaternion(cs_record['rotation']))
+        bb.translate(np.array(cs_record['translation']))
+        # 로컬 가시성 필터는 카메라에서만
+        if sensor_record['modality'] == 'camera':
+            if not box_in_image(bb, cam_intrinsic, imsize, vis_level=box_vis_level):
+                continue
+        out.append(bb)
+
+    return out, cam_intrinsic, imsize
 
 # ------------------------------
 # Optional: build mp4 via OpenCV (if you don't want to use ffmpeg)
@@ -399,57 +423,6 @@ def build_video_from_frames_glob(frame_glob: str, out_mp4: str, fps: int = 10):
     vw.release()
     print(f"[OK] Wrote video: {out_mp4}")
 
-def rasterize_points_to_bev(x, y, bev_range_m: float, meters_per_pixel: float = 0.10):
-    """
-    Rasterize XY point cloud into a dense BEV bitmap and return (bev_img, extent).
-    - x, y: arrays of points in meters (same frame); shape (N,)
-    - bev_range_m: half-range in meters, canvas is [-R, R] in both axes
-    - meters_per_pixel: BEV resolution (smaller -> sharper but heavier)
-    Returns:
-        bev_img (H, W) float32   -- log-scaled density image
-        extent = (-R, R, -R, R)  -- for imshow(extent=...)
-    """
-    R = float(bev_range_m)
-    m_per_px = float(meters_per_pixel)
-    H = int((2 * R) / m_per_px)
-    W = H  # square canvas to keep 1:1 aspect in meters
-
-    # Clip to canvas
-    mask = (np.abs(x) <= R) & (np.abs(y) <= R)
-    x = x[mask]
-    y = y[mask]
-
-    # Map meters -> pixel indices (0..W-1, 0..H-1), origin at center
-    ix = ((x + R) / (2 * R) * (W - 1) + 0.5).astype(np.int32)
-    iy = ((R - y) / (2 * R) * (H - 1) + 0.5).astype(np.int32)
-
-    valid = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
-    ix, iy = ix[valid], iy[valid]
-
-    # Accumulate counts
-    bev = np.zeros((H, W), dtype=np.uint32)
-    np.add.at(bev, (iy, ix), 1)
-
-    # Log-scale for better contrast (avoid banding with float32)
-    bev = np.log1p(bev).astype(np.float32)
-
-    # Return image and meter extent for imshow
-    return bev, (-R, R, -R, R)
-
-def get_gt_boxes_in_lidar(nusc, sample_token: str, lidar_sd_token: str):
-    """
-    Return GT boxes already transformed into the LiDAR sensor frame
-    using the official NuScenes helper (most reliable).
-    """
-    sample = nusc.get('sample', sample_token)
-    # Use NuScenes API to fetch GT boxes in the LiDAR sensor frame directly.
-    _, boxes_lidar, _ = nusc.get_sample_data(
-        lidar_sd_token,
-        selected_anntokens=sample['anns']  # list of GT ann tokens
-    )
-    return boxes_lidar
-
-
 
 # ------------------------------
 # Main: render all samples in a chosen scene to frames, then make video
@@ -459,22 +432,22 @@ if __name__ == '__main__':
     How to use:
     1) Adjust `version`, `dataroot`, `results_json`, and `scene_idx` as needed.
     2) Run:  python3 path/to/this_script.py
-    3) Frames will be saved under vis_out/scene_{scene_idx:03d}/00000.png ...
+    3) Frames will be saved under vis_out/<scene_name>/00000.png ...
     4) Make MP4:
        - (A) ffmpeg (recommended):
            sudo apt-get update && sudo apt-get install -y ffmpeg
-           ffmpeg -y -framerate 10 -i vis_out/scene_010/%05d.png \
+           ffmpeg -y -framerate 10 -i vis_out/n030/%05d.png \
              -c:v libx264 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
-             vis_out/scene_010_composite.mp4
+             vis_out/n030_composite.mp4
        - (B) OpenCV:
-           build_video_from_frames_glob('vis_out/scene_010/*.png', 'vis_out/scene_010_composite.mp4', fps=10)
+           build_video_from_frames_glob('vis_out/n030/*.png', 'vis_out/n030_composite.mp4', fps=10)
     """
 
     # -------------- Config --------------
     version = 'v1.0-trainval'
     dataroot = './data/nuscenes'
     results_json = 'test/bevformer_tiny_tcar/Fri_Oct_10_22_17_15_2025/pts_bbox/results_nusc.json'
-    scene_idx = 57                 # choose the scene index you want
+    scene_idx = 16
     cams_order = ('CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
                   'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT')
     score_th = 0.5
@@ -482,6 +455,7 @@ if __name__ == '__main__':
     bev_range = 50.0
     fps = 5
     # ------------------------------------
+
     # Init dataset
     nusc = TestCar(version=version, dataroot=dataroot, verbose=True)
 
@@ -493,7 +467,7 @@ if __name__ == '__main__':
     val_scenes = splits.val
     assert 0 <= scene_idx < len(val_scenes), f"scene_idx out of range: {scene_idx}"
     scene_name = val_scenes[scene_idx]
-    scene_name = 'n030'
+
     # Find exact scene record
     scene_record = None
     for s in nusc.scene:
@@ -514,7 +488,7 @@ if __name__ == '__main__':
     print(f"[INFO] Number of samples: {len(sample_tokens)}")
 
     # Prepare output directory
-    out_dir = osp.join('vis_out', scene_name)
+    out_dir = osp.join('vis_out', f'GT_ONLY_{scene_name}')
     os.makedirs(out_dir, exist_ok=True)
 
     # Render frames
@@ -534,6 +508,5 @@ if __name__ == '__main__':
 
     # Optionally stitch to MP4 here using OpenCV:
     build_video_from_frames_glob(osp.join(out_dir, "*.png"),
-                                 osp.join(out_dir, f"scene_{scene_idx:03d}_composite.mp4"),
+                                 osp.join(out_dir, f"{scene_name}_composite.mp4"),
                                  fps=fps)
-

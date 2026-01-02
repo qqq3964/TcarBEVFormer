@@ -744,6 +744,28 @@ class NuScenesEval_custom(NuScenesEval):
         """
         start_time = time.time()
 
+        output_file_path = "/home/user/BEVFormer/token.txt"
+        try:
+            with open(output_file_path, "w") as f:
+                
+                pred_tokens = set(self.pred_boxes.sample_tokens)
+                gt_tokens = set(self.gt_boxes.sample_tokens)
+
+                f.write(f"--- PREDICTION TOKENS ({len(pred_tokens)} total) ---\n")
+                for token in sorted(list(pred_tokens)):
+                    f.write(token + "\n")
+                
+                f.write(f"\n\n--- GROUND TRUTH TOKENS ({len(gt_tokens)} total) ---\n")
+                for token in sorted(list(gt_tokens)):
+                    f.write(token + "\n")
+                    
+            print(f"DEBUG: evaluate() 함수에서 토큰 저장 완료: {output_file_path}")
+            
+        except Exception as e:
+            print(f"DEBUG: evaluate() 함수에서 토큰 저장 실패: {e}")
+        print("="*30 + "\n")
+
+
         # -----------------------------------
         # Step 1: Accumulate metric data for all classes and distance thresholds.
         # -----------------------------------
